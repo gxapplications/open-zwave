@@ -52,7 +52,7 @@ namespace OpenZWave
 				uint8 const _expectedReply,			// = 0
 				uint8 const _expectedCommandClassId	// = 0
 				) :
-				m_logText(_logText), m_bFinal(false), m_bCallbackRequired(_bCallbackRequired), m_callbackId(0), m_expectedReply(0), m_expectedCommandClassId(_expectedCommandClassId), m_length(4), m_targetNodeId(_targetNodeId), m_sendAttempts(0), m_maxSendAttempts( MAX_TRIES), m_instance(1), m_endPoint(0), m_flags(0), m_encrypted(false), m_noncerecvd(false), m_homeId(0)
+				m_logText(_logText), m_bFinal(false), m_bCallbackRequired(_bCallbackRequired), m_callbackId(0), m_expectedReply(0), m_expectedCommandClassId(_expectedCommandClassId), m_length(4), m_targetNodeId(_targetNodeId), m_sendAttempts(0), m_maxSendAttempts( MAX_TRIES), m_instance(1), m_endPoint(0), m_flags(0), m_encrypted(false), m_noncerecvd(false), m_homeId(0), m_resendDuetoCANorNAK(false)
 		{
 			if (_bReplyRequired)
 			{
@@ -294,7 +294,7 @@ namespace OpenZWave
 			Log::Write(LogLevel_Info, m_targetNodeId, "Encrypted Flag is %d", m_encrypted);
 			if (m_encrypted == false)
 				return m_buffer;
-			else if (EncyrptBuffer(m_buffer, m_length, GetDriver(), GetDriver()->GetControllerNodeId(), m_targetNodeId, m_nonce, e_buffer))
+			else if (EncryptBuffer(m_buffer, m_length, GetDriver(), GetDriver()->GetControllerNodeId(), m_targetNodeId, m_nonce, e_buffer))
 			{
 				return e_buffer;
 			}

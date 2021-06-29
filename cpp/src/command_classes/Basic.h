@@ -59,7 +59,7 @@ namespace OpenZWave
 						return "COMMAND_CLASS_BASIC";
 					}
 
-					bool SetMapping(uint8 const _commandClassId, bool const _doLog = true);	// Map COMMAND_CLASS_BASIC messages to another command class
+					bool SetMapping(uint8 const _commandClassId);	// Map COMMAND_CLASS_BASIC messages to another command class
 					uint8_t GetMapping()
 					{
 						return m_com.GetFlagByte(COMPAT_FLAG_BASIC_MAPPING);
@@ -78,9 +78,16 @@ namespace OpenZWave
 						return StaticGetCommandClassName();
 					}
 					virtual bool HandleMsg(uint8 const* _data, uint32 const _length, uint32 const _instance = 1) override;
+					virtual bool HandleIncomingMsg(uint8 const* _data, uint32 const _length, uint32 const _instance = 1) override;
 					virtual bool SetValue(Internal::VC::Value const& _value) override;
 
 					void Set(uint8 const _level);
+
+					virtual uint8 GetMaxVersion() override
+					{
+						return 2;
+					}
+
 
 				protected:
 					virtual void CreateVars(uint8 const _instance) override;

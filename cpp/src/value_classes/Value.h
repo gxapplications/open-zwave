@@ -33,8 +33,10 @@
 #include <time.h>
 #endif
 #include "Defs.h"
+#include "TimerThread.h"
 #include "platform/Ref.h"
 #include "value_classes/ValueID.h"
+#include "platform/Log.h"
 
 class TiXmlElement;
 
@@ -49,7 +51,7 @@ namespace OpenZWave
 			/** \brief Base class for values associated with a node.
 			 * \ingroup ValueID
 			 */
-			class Value: public Internal::Platform::Ref
+			class Value: public Internal::Platform::Ref, private Timer
 			{
 					friend class OpenZWave::Driver;
 					friend class ValueStore;
@@ -124,6 +126,15 @@ namespace OpenZWave
 						return m_verifyChanges;
 					}
 
+					void SetRefreshAfterSet(bool _refreshAfterSet)
+					{
+						m_refreshAfterSet = _refreshAfterSet;
+					}
+					bool GetRefreshAfterSet()
+					{
+						return m_refreshAfterSet;
+					}
+
 					virtual string const GetAsString() const
 					{
 						return "";
@@ -140,11 +151,23 @@ namespace OpenZWave
 					static char const* GetGenreNameFromEnum(ValueID::ValueGenre _genre);
 					static OpenZWave::ValueID::ValueType GetTypeEnumFromName(char const* _name);
 					static char const* GetTypeNameFromEnum(ValueID::ValueType _type);
+#if 0
+					inline void AddRef() {
+						Ref::AddRef();
+						Log::Write(LogLevel_Warning, "Add Ref %d - %d %s", m_refs, m_id.GetId(), __func__);
+						Internal::StackTraceGenerator::GetTrace();
+					}
+					inline int32 Release() {
+						Log::Write(LogLevel_Warning, "Del Ref %d - %d %s", m_refs -1, m_id.GetId(), __func__);
+						Internal::StackTraceGenerator::GetTrace();
+						return Ref::Release();
+					}
+#endif
+					void sendValueRefresh(uint32 _unused);
 
 				protected:
 					virtual ~Value();
 
-//		void SetIsSet() { m_isSet = true; }	// TODO: consider removing this...it's never called since m_isSet is set in ValueChanged and ValueRefreshed
 					bool IsCheckingChange() const
 					{
 						return m_checkChange;
@@ -153,16 +176,25 @@ namespace OpenZWave
 					{
 						m_checkChange = _check;
 					}
+					bool IsTargetValueSet() const
+					{
+						return m_targetValueSet;
+					}
+
 					void OnValueRefreshed();			// A value in a device has been refreshed
 					void OnValueChanged();				// The refreshed value actually changed
-					int VerifyRefreshedValue(void* _originalValue, void* _checkValue, void* _newValue, ValueID::ValueType _type, int _originalValueLength = 0, int _checkValueLength = 0, int _newValueLength = 0);
+					int VerifyRefreshedValue(void* _originalValue, void* _checkValue, void* _newValue, void* _targetValue, ValueID::ValueType _type, int _originalValueLength = 0, int _checkValueLength = 0, int _newValueLength = 0, int _targetValueLength = 0);
+					int CheckTargetValue(void* _newValue, void* _targetValue, ValueID::ValueType _type, int _newValueLength, int _targetValueLength);
 
 					int32 m_min;
 					int32 m_max;
 
 					time_t m_refreshTime;			// time_t identifying when this value was last refreshed
 					bool m_verifyChanges;		// if true, apparent changes are verified; otherwise, they're not
+					bool m_refreshAfterSet;		// if true, all value sets are followed by a get to refresh the value manually
 					ValueID m_id;
+					bool m_targetValueSet;		// If the Target Value is Set 
+					uint32 m_duration;			// The Duration, if the CC supports it
 
 				private:
 					string m_units;

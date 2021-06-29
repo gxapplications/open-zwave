@@ -257,7 +257,6 @@ namespace OpenZWave
 						res |= true;
 					}
 				}
-//				exit(-1);
 				return res;
 			}
 
@@ -365,6 +364,12 @@ namespace OpenZWave
 				int8 meterType = (MeterType) (_data[1] & 0x1f);
 
 				uint16_t index = (((meterType -1) * 16) + scale);
+
+				if (MeterTypes.count(index) == 0) {
+					Log::Write(LogLevel_Warning, GetNodeId(), "MeterTypes Index is out of range/not valid - %d", index);
+					return false;
+				}
+
 				Log::Write(LogLevel_Info, GetNodeId(), "Received Meter Report for %s (%d) with Units %s (%d) on Index %d: %s",MeterTypes.at(index).Label.c_str(), meterType, MeterTypes.at(index).Unit.c_str(), scale, index, valueStr.c_str());
 
 				Internal::VC::ValueDecimal* value = static_cast<Internal::VC::ValueDecimal*>(GetValue(_instance, index));
@@ -377,7 +382,7 @@ namespace OpenZWave
 						value = static_cast<Internal::VC::ValueDecimal*>(GetValue(_instance, index));
 					}
 				} else if (!value) {
-					Log::Write(LogLevel_Warning, GetNodeId(), "Can't Find a ValueID Index for %s with Unit %s (%d) - Index %d", MeterTypes.at(index).Label.c_str(), meterType, MeterTypes.at(index).Unit.c_str(), scale, index);
+					Log::Write(LogLevel_Warning, GetNodeId(), "Can't Find a ValueID Index for %s (%d) with Unit %s (%d) - Index %d", MeterTypes.at(index).Label.c_str(), meterType, MeterTypes.at(index).Unit.c_str(), scale, index);
 					return false;
 				}
 				value->OnValueRefreshed(valueStr);

@@ -65,6 +65,11 @@ namespace OpenZWave
 		HttpClient::~HttpClient()
 		{
 			m_exitEvent->Set();
+			m_exitEvent->Release();
+			m_httpThread->Stop();
+			m_httpThread->Release();
+			m_httpDownloadEvent->Release();
+			m_httpMutex->Release();
 		}
 
 		bool HttpClient::StartDownload(HttpDownload *transfer)
@@ -83,6 +88,7 @@ namespace OpenZWave
 				case HttpDownload::File:
 				case HttpDownload::Config:
 				case HttpDownload::MFSConfig:
+				case HttpDownload::Image:
 					/* make sure it has everything */
 					if ((transfer->url.size() <= 0) || (transfer->filename.size() <= 0))
 					{

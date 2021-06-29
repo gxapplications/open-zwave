@@ -43,7 +43,7 @@ namespace OpenZWave
 
 		ManufacturerSpecificDB *ManufacturerSpecificDB::s_instance = NULL;
 		std::map<uint16, std::string> ManufacturerSpecificDB::s_manufacturerMap;
-		std::map<int64, ProductDescriptor*> ManufacturerSpecificDB::s_productMap;
+		std::map<int64, std::shared_ptr<ProductDescriptor> > ManufacturerSpecificDB::s_productMap;
 		bool ManufacturerSpecificDB::s_bXmlLoaded = false;
 
 		ManufacturerSpecificDB *ManufacturerSpecificDB::Create()
@@ -69,8 +69,11 @@ namespace OpenZWave
 			// Ensure the singleton instance is set
 			s_instance = this;
 
-			if (!s_bXmlLoaded)
-				LoadProductXML();
+			if (!s_bXmlLoaded) {
+				if (!LoadProductXML()) {
+					OZW_ERROR(OZWException::OZWEXCEPTION_CONFIG, "Cannot Load/Read ManufacturerSpecificDB! - Missing/Invalid Config File?");
+				}
+			}
 
 		}
 
@@ -109,6 +112,13 @@ namespace OpenZWave
 				char const *str = root->Value();
 				if (str && !strcmp(str, "Product"))
 				{
+					str = root->Attribute("xmlns");
+					if (str && strcmp(str, "https://github.com/OpenZWave/open-zwave"))
+					{
+						Log::Write(LogLevel_Info, "Product Config File % has incorrect xml Namespace", path.c_str());
+						delete pDoc;
+						return;
+					}
 					// Read in the revision attributes
 					str = root->Attribute("Revision");
 					if (!str)
@@ -235,14 +245,14 @@ namespace OpenZWave
 							ProductDescriptor* product = new ProductDescriptor(manufacturerId, productType, productId, productName, s_manufacturerMap[manufacturerId], dconfigPath);
 							if (s_productMap[product->GetKey()] != NULL)
 							{
-								ProductDescriptor *c = s_productMap[product->GetKey()];
+								std::shared_ptr<ProductDescriptor> c = s_productMap[product->GetKey()];
 								Log::Write(LogLevel_Info, "Product name collision: %s type %x id %x manufacturerid %x, collides with %s, type %x id %x manufacturerid %x", productName.c_str(), productType, productId, manufacturerId, c->GetProductName().c_str(), c->GetProductType(), c->GetProductId(), c->GetManufacturerId());
 								delete product;
 							}
 							else
 							{
 								LoadConfigFileRevision(product);
-								s_productMap[product->GetKey()] = product;
+								s_productMap[product->GetKey()] = std::shared_ptr<ProductDescriptor>(product);
 							}
 						}
 
@@ -269,10 +279,9 @@ namespace OpenZWave
 			LockGuard LG(m_MfsMutex);
 			if (s_bXmlLoaded)
 			{
-				map<int64, ProductDescriptor*>::iterator pit = s_productMap.begin();
+				map<int64, std::shared_ptr<ProductDescriptor> >::iterator pit = s_productMap.begin();
 				while (!s_productMap.empty())
 				{
-					pit->second->Release();
 					s_productMap.erase(pit);
 					pit = s_productMap.begin();
 				}
@@ -291,42 +300,50 @@ namespace OpenZWave
 		void ManufacturerSpecificDB::checkConfigFiles(Driver *driver)
 		{
 			LockGuard LG(m_MfsMutex);
-			if (!s_bXmlLoaded)
-				LoadProductXML();
+			if (!s_bXmlLoaded) {
+				if (!LoadProductXML()) {
+					OZW_ERROR(OZWException::OZWEXCEPTION_CONFIG, "Cannot Load/Read ManufacturerSpecificDB! - Missing/Invalid Config File?");
+				}
+			}
 
 			string configPath;
 			Options::Get()->GetOptionAsString("ConfigPath", &configPath);
 
-			map<int64, ProductDescriptor*>::iterator pit;
+			map<int64, std::shared_ptr<ProductDescriptor> >::iterator pit;
 			for (pit = s_productMap.begin(); pit != s_productMap.end(); pit++)
 			{
-				ProductDescriptor *c = pit->second;
+				std::shared_ptr<ProductDescriptor> c = pit->second;
 				if (c->GetConfigPath().size() > 0)
 				{
 					string path = configPath + c->GetConfigPath();
-
-					/* check if we are downloading already */
-					std::list<string>::iterator iter = std::find(m_downloading.begin(), m_downloading.end(), path);
-					/* check if the file exists */
-					if (iter == m_downloading.end() && !Internal::Platform::FileOps::Create()->FileExists(path))
-					{
-						Log::Write(LogLevel_Warning, "Config File for %s does not exist - %s", c->GetProductName().c_str(), path.c_str());
-						/* try to download it */
-						if (driver->startConfigDownload(c->GetManufacturerId(), c->GetProductType(), c->GetProductId(), path))
+					if (!Internal::Platform::FileOps::Create()->FileExists(path)) { 
+						/* check if we are downloading already */
+						std::list<string>::iterator iter = std::find(m_downloading.begin(), m_downloading.end(), path);
+						/* check if the file exists */
+						if (iter == m_downloading.end())
 						{
-							m_downloading.push_back(path);
+							Log::Write(LogLevel_Warning, "Config File for %s does not exist - %s", c->GetProductName().c_str(), path.c_str());
+							/* try to download it */
+							if (driver->startConfigDownload(c->GetManufacturerId(), c->GetProductType(), c->GetProductId(), path))
+							{
+								m_downloading.push_back(path);
+							}
+							else
+							{
+								Log::Write(LogLevel_Warning, "Can't download file %s", path.c_str());
+								Notification* notification = new Notification(Notification::Type_UserAlerts);
+								notification->SetUserAlertNotification(Notification::Alert_ConfigFileDownloadFailed);
+								driver->QueueNotification(notification);
+							}
 						}
-						else
+						else if (iter != m_downloading.end())
 						{
-							Log::Write(LogLevel_Warning, "Can't download file %s", path.c_str());
-							Notification* notification = new Notification(Notification::Type_UserAlerts);
-							notification->SetUserAlertNotification(Notification::Alert_ConfigFileDownloadFailed);
-							driver->QueueNotification(notification);
+							Log::Write(LogLevel_Debug, "Config file for %s already queued", c->GetProductName().c_str());
 						}
 					}
-					else if (iter != m_downloading.end())
+					else 
 					{
-						Log::Write(LogLevel_Debug, "Config file for %s already queued", c->GetProductName().c_str());
+						checkConfigFileContents(driver, path);	
 					}
 				}
 			}
@@ -356,6 +373,64 @@ namespace OpenZWave
 			}
 		}
 
+		void ManufacturerSpecificDB::checkConfigFileContents(Driver *driver, string file) 
+		{
+			string configPath;
+			Options::Get()->GetOptionAsString("ConfigPath", &configPath);
+			TiXmlDocument* pDoc = new TiXmlDocument();
+			if (!pDoc->LoadFile(file.c_str(), TIXML_ENCODING_UTF8))
+			{
+				delete pDoc;
+				Log::Write(LogLevel_Info, "Unable to load %s", file.c_str());
+				return;
+			}
+			pDoc->SetUserData((void *) file.c_str());
+			TiXmlElement const* root = pDoc->RootElement();
+
+			TiXmlElement const* metaDataElement = root->FirstChildElement("MetaData");
+			if (metaDataElement) {
+				TiXmlElement const* metaDataItem = metaDataElement->FirstChildElement("MetaDataItem");
+				while (metaDataItem) {
+					char const *str = metaDataItem->Attribute("name");
+					if (str && !strcmp(str, "ProductPic"))
+					{
+						str = metaDataItem->GetText();
+						if (str) 
+						{ 
+							string imagefile = configPath + str;
+							if (!Internal::Platform::FileOps::Create()->FileExists(imagefile)) 
+							{ 
+								/* check if we are downloading already */
+								std::list<string>::iterator iter = std::find(m_downloading.begin(), m_downloading.end(), imagefile);
+								/* check if the file exists */
+								if (iter == m_downloading.end())
+								{
+									if (driver->startDownload(imagefile, metaDataItem->GetText())) {
+										Log::Write(LogLevel_Info, "Missing Picture %s - Starting Download", imagefile.c_str());
+										m_downloading.push_back(imagefile);
+									}
+								}
+							}
+						}
+					}
+					metaDataItem = metaDataItem->NextSiblingElement("MetaDataItem");
+				}				
+			}
+		}
+
+		void ManufacturerSpecificDB::fileDownloaded(Driver *, string file, bool success) 
+		{
+			/* check if we are downloading already */
+			std::list<string>::iterator iter = std::find(m_downloading.begin(), m_downloading.end(), file);
+			if (iter != m_downloading.end())
+			{
+				m_downloading.erase(iter);
+			}	
+			checkInitialized();		
+		}
+
+
+
 		void ManufacturerSpecificDB::mfsConfigDownloaded(Driver *driver, string file, bool success)
 		{
 			/* check if we are downloading already */
@@ -366,7 +441,9 @@ namespace OpenZWave
 				if (success)
 				{
 					UnloadProductXML();
-					LoadProductXML();
+					if (!LoadProductXML()) {
+						OZW_ERROR(OZWException::OZWEXCEPTION_CONFIG, "Cannot Load/Read ManufacturerSpecificDB! - Missing/Invalid Config File?");
+					}
 					checkConfigFiles(driver);
 				}
 			}
@@ -396,18 +473,21 @@ namespace OpenZWave
 			}
 		}
 
-		ProductDescriptor *ManufacturerSpecificDB::getProduct(uint16 _manufacturerId, uint16 _productType, uint16 _productId)
+		std::shared_ptr<ProductDescriptor> ManufacturerSpecificDB::getProduct(uint16 _manufacturerId, uint16 _productType, uint16 _productId)
 		{
 
-			if (!s_bXmlLoaded)
-				LoadProductXML();
+			if (!s_bXmlLoaded) {
+				if (!LoadProductXML()) {
+					OZW_ERROR(OZWException::OZWEXCEPTION_CONFIG, "Cannot Load/Read ManufacturerSpecificDB! - Missing/Invalid Config File?");
+				}
+			}
 
 			// Try to get the real manufacturer and product names
 			map<uint16, string>::iterator mit = s_manufacturerMap.find(_manufacturerId);
 			if (mit != s_manufacturerMap.end())
 			{
 				// Get the product
-				map<int64, ProductDescriptor*>::iterator pit = s_productMap.find(ProductDescriptor::GetKey(_manufacturerId, _productType, _productId));
+				map<int64, std::shared_ptr<ProductDescriptor> >::iterator pit = s_productMap.find(ProductDescriptor::GetKey(_manufacturerId, _productType, _productId));
 				if (pit != s_productMap.end())
 				{
 					return pit->second;

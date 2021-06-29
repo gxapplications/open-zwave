@@ -74,6 +74,8 @@ namespace OpenZWave
 					CommandClass(_homeId, _nodeId), m_v1Params(false), m_ClearTimeout(5000)
 			{
 				Timer::SetDriver(GetDriver());
+				m_com.EnableFlag(COMPAT_FLAG_NOT_ENABLECLEAR, true);
+				m_com.EnableFlag(COMPAT_FLAG_NOT_V1ALARMTYPES_ENABLED, false);
 				SetStaticRequest(StaticRequest_Values);
 			}
 
@@ -97,7 +99,7 @@ namespace OpenZWave
 						msg->Append(GetDriver()->GetTransmitOptions());
 						GetDriver()->SendMsg(msg, _queue);
 					}
-					else
+					if (GetVersion() == 1 || m_com.GetFlagBool(COMPAT_FLAG_NOT_V1ALARMTYPES_ENABLED))
 					{
 						/* create version 1 ValueID's */
 						if (Node* node = GetNodeUnsafe())
@@ -107,7 +109,7 @@ namespace OpenZWave
 							node->CreateValueByte(ValueID::ValueGenre_User, GetCommandClassId(), _instance, ValueID_Index_Alarm::Level_v1, "Alarm Level", "", true, false, 0, 0);
 						}
 					}
-					if (GetVersion() < 4)
+					if (GetVersion() < 4 && m_com.GetFlagBool(COMPAT_FLAG_NOT_ENABLECLEAR) == true)
 					{
 						if (Node* node = GetNodeUnsafe())
 						{
@@ -145,7 +147,7 @@ namespace OpenZWave
 			{
 				if (m_com.GetFlagBool(COMPAT_FLAG_GETSUPPORTED))
 				{
-					if (GetVersion() == 1)
+					if (GetVersion() <= 2)
 					{
 						Msg* msg = new Msg("AlarmCmd_Get", GetNodeId(), REQUEST, FUNC_ID_ZW_SEND_DATA, true, true, FUNC_ID_APPLICATION_COMMAND_HANDLER, GetCommandClassId());
 						msg->SetInstance(this, _instance);
@@ -192,6 +194,7 @@ namespace OpenZWave
 			{
 				if (AlarmCmd_Report == (AlarmCmd) _data[0])
 				{
+					Log::Write(LogLevel_Info, GetNodeId(), "Got a AlarmCmd_Report Message.... ");
 					// We have received a report from the Z-Wave device
 					if (GetVersion() == 1)
 					{
@@ -237,7 +240,7 @@ namespace OpenZWave
 
 						uint8 NotificationType = _data[5];
 						uint8 NotificationEvent = _data[6];
-						bool NotificationSequencePresent = ((_data[7] & 0x80) == 1);
+						bool NotificationSequencePresent = (_data[7] & 0x80);
 						uint8 EventParamLength = (_data[7] & 0x1F);
 						uint8 NotificationSequence = 0;
 						if (NotificationSequencePresent)
@@ -254,10 +257,10 @@ namespace OpenZWave
 						/* do any Event Params that are sent over */
 						if (EventParamLength > 0)
 						{
-							const std::map<uint32, NotificationCCTypes::NotificationEventParams*> nep = NotificationCCTypes::Get()->GetAlarmNotificationEventParams(NotificationType, NotificationEvent);
+							const std::map<uint32, std::shared_ptr<NotificationCCTypes::NotificationEventParams> > nep = NotificationCCTypes::Get()->GetAlarmNotificationEventParams(NotificationType, NotificationEvent);
 							if (nep.size() > 0)
 							{
-								for (std::map<uint32, NotificationCCTypes::NotificationEventParams*>::const_iterator it = nep.begin(); it != nep.end(); it++)
+								for (std::map<uint32, std::shared_ptr<NotificationCCTypes::NotificationEventParams> >::const_iterator it = nep.begin(); it != nep.end(); it++)
 								{
 									switch (it->second->type)
 									{
@@ -342,7 +345,7 @@ namespace OpenZWave
 												/* some devices (Like BeNext TagReader) don't send a Proper UserCodeCmd_Report Message, Just the Index of the Code that Triggered */
 												if (Internal::VC::ValueByte *value = static_cast<Internal::VC::ValueByte *>(GetValue(_instance, it->first)))
 												{
-													value->OnValueRefreshed(_data[11]);
+													value->OnValueRefreshed(_data[8]);
 													value->Release();
 													m_ParamsSet.push_back(it->first);
 												}
@@ -433,7 +436,7 @@ namespace OpenZWave
 						}
 
 						/* Any Version below 4 doesn't have a Clear Event, so we trigger a timer to manually clear it */
-						if ((NotificationEvent != 0) && (GetVersion() < 4))
+						if ((NotificationEvent != 0) && (GetVersion() < 4) && (m_ClearTimeout > 0) && (m_com.GetFlagBool(COMPAT_FLAG_NOT_ENABLECLEAR) == true))
 						{
 							Log::Write(LogLevel_Info, GetNodeId(), "Automatically Clearing Alarm in %dms", m_ClearTimeout);
 							m_TimersToInstances.insert(std::pair<uint32, uint32>(NotificationType, _instance));
@@ -441,6 +444,10 @@ namespace OpenZWave
 							TimerSetEvent(m_ClearTimeout, callback, 1);
 						}
 
+					}
+					else 
+					{
+						Log::Write(LogLevel_Warning, GetNodeId(), "Got a AlarmCmd_Report Message - Greater than Version 2, but size was less than 7?");
 					}
 					return true;
 				}
@@ -473,9 +480,9 @@ namespace OpenZWave
 									{
 										/* EventSupported is only compatible in Version 3 and above */
 										vector<Internal::VC::ValueList::Item> _items;
-										if (const NotificationCCTypes::NotificationTypes *nt = NotificationCCTypes::Get()->GetAlarmNotificationTypes(index))
+										if (const std::shared_ptr<NotificationCCTypes::NotificationTypes> nt = NotificationCCTypes::Get()->GetAlarmNotificationTypes(index))
 										{
-											for (std::map<uint32, NotificationCCTypes::NotificationEvents *>::const_iterator it = nt->Events.begin(); it != nt->Events.end(); it++)
+											for (std::map<uint32, std::shared_ptr<NotificationCCTypes::NotificationEvents> >::const_iterator it = nt->Events.begin(); it != nt->Events.end(); it++)
 											{
 												/* Create it */
 												SetupEvents(index, it->first, &_items, _instance);
@@ -547,7 +554,7 @@ namespace OpenZWave
 			}
 			void Alarm::SetupEvents(uint32 type, uint32 index, vector<Internal::VC::ValueList::Item> *_items, uint32 const _instance)
 			{
-				if (const NotificationCCTypes::NotificationEvents *ne = NotificationCCTypes::Get()->GetAlarmNotificationEvents(type, index))
+				if (const std::shared_ptr<NotificationCCTypes::NotificationEvents> ne = NotificationCCTypes::Get()->GetAlarmNotificationEvents(type, index))
 				{
 					Log::Write(LogLevel_Info, GetNodeId(), "\tEvent Type %d: %s ", ne->id, ne->name.c_str());
 					Internal::VC::ValueList::Item item;
@@ -557,7 +564,7 @@ namespace OpenZWave
 					/* If there are Params - Lets create the correct types now */
 					if (Node* node = GetNodeUnsafe())
 					{
-						for (std::map<uint32, NotificationCCTypes::NotificationEventParams*>::const_iterator it = ne->EventParams.begin(); it != ne->EventParams.end(); it++)
+						for (std::map<uint32, std::shared_ptr<NotificationCCTypes::NotificationEventParams> >::const_iterator it = ne->EventParams.begin(); it != ne->EventParams.end(); it++)
 						{
 							switch (it->second->type)
 							{
@@ -690,6 +697,19 @@ namespace OpenZWave
 				else
 				{
 					Log::Write(LogLevel_Warning, GetNodeId(), "Couldn't Find a ValueList to ClearAlarm for Notification Type %d (%d)", type, _instance);
+				}
+				if (m_v1Params)
+				{
+					if (Internal::VC::ValueByte *value = static_cast<Internal::VC::ValueByte*>(GetValue(_instance, ValueID_Index_Alarm::Type_v1)))
+					{
+						value->OnValueRefreshed(0);
+						value->Release();
+					}
+					if (Internal::VC::ValueByte* value = static_cast<Internal::VC::ValueByte*>(GetValue(_instance, ValueID_Index_Alarm::Level_v1)))
+					{
+						value->OnValueRefreshed(0);
+						value->Release();
+					}
 				}
 			}
 		} // namespace CC
